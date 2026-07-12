@@ -1,110 +1,89 @@
 package main
+
 import (
-	"encoding/binary"
-	"fmt" // you will need this
+	"fmt"
 	"io"
 	"net"
 	"os"
+
+	"github.com/samarthsrao/tcp-conn-pool/pkg/pgwire"
 )
 
 func main() {
-	listener, err := net.Listen("tcp", ":5433" )
-	if err !=nil {
-		fmt.Fprintf(os.Stderr, "Failed to listen: %v \n", err)
+	listener, err := net.Listen("tcp", ":5433")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to listen: %v\n", err)
 		os.Exit(1)
 	}
-
 	defer listener.Close()
 
-	fmt.Println("Proxy listening to :5433 - waiting for connections...")
+	fmt.Println("Proxy listening on :5433 (TCP-202: startup handshake)...")
 
 	for {
-		conn, err := listener.Accept()
+		clientConn, err := listener.Accept()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Proxy failed to accept: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Failed to accept: %v\n", err)
 			continue
 		}
-		go handleConnection(conn)
+		go handleConnection(clientConn)
 	}
 }
 
 func handleConnection(clientConn net.Conn) {
 	defer clientConn.Close()
-	backendConn,backendErr := net.Dial("tcp", "localhost:5432")
-	if backendErr !=nil {
-		fmt.Printf(os.Stderr, "Failed to connect to a backend %v \n",backendErr)
+
+	// 1) Client startup phase (optional SSLRequest → 'N', then StartupMessage).
+	startup, err := pgwire.ReadStartupPhase(clientConn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Startup phase failed: %v\n", err)
+		return
+	}
+	fmt.Printf("Startup from %s: user=%q database=%q protocol=%d params=%v\n",
+		clientConn.RemoteAddr(), startup.User(), startup.Database(),
+		startup.ProtocolVersion, startup.Params)
+
+	// 2) Dial real Postgres and complete its handshake (proxy owns backend auth).
+	backendConn, err := net.Dial("tcp", "localhost:5432")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to dial backend: %v\n", err)
 		return
 	}
 	defer backendConn.Close()
 
-	fmt.Printf("Client Connected: %s\n", clientConn.RemoteAddr())
-	startupMessage := make([]byte, 4)
-
-	if _, err := io.ReadFull(clinetConn. startupMessage);
-	err != nil
-	{
-		fmt.Printf(os.Stderr, "Failed to read Startup Message")
-		return
-	}
-	totalLength := binary.BigEndian.Uint32(startupMessage)
-	payloadLength := totalLength -4
-
-	payloadBuff := make([]byte, payloadLength)
-	if _, err := io.ReadFull(clientConn, payloadBuff);
-	err!=nil {
-		fmt.Printf(os.Stderr, "Failed to read Startup Message")
+	password := os.Getenv("PGPASSWORD")
+	hs, err := pgwire.CompleteBackendStartup(backendConn, startup.Raw, startup.User(), password)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Backend handshake failed: %v\n", err)
 		return
 	}
 
-	if _,err := backendConn.Write(startupMessage); err!=nil {
-
+	// 3) Spoof successful auth toward the client (auth bypass for the app).
+	//    Replay ParameterStatus + BackendKeyData from the real backend.
+	if err := pgwire.WriteClientStartupOK(clientConn, hs); err != nil {
+		fmt.Fprintf(os.Stderr, "Client handshake write failed: %v\n", err)
 		return
 	}
+	fmt.Printf("Client handshake complete; tunneling queries for %s\n", clientConn.RemoteAddr())
 
-	if _, err := backendConn.Write(payloadBuff); err != nil {
-		return
-	}
-	if _, err := backendConn.Write(payloadBuff) err!=nil {
-		return
-	}
-	fmt.Println("Connected to the backend ")
-	done := make(chan struct {}, 2)
+	// 4) Transparent pipe for the rest of the session (queries/results).
+	done := make(chan struct{}, 2)
 
-	go func() {
-		_,_ = io.Copy(clientConn,backendConn)
-		done <- struct{}{}
-	}()
 	go func() {
 		defer func() { done <- struct{}{} }()
-
-		headerBuf := make([]byte, 5)
-
-		for {
-			_,err := io.ReadFull(clientConn, headerBuf)
-			if err != io.EOF {
-				fmt.Printf(os.Stderr, " Error reading message")
-				}return
-
+		if _, err := io.Copy(clientConn, backendConn); err != nil && err != io.EOF {
+			fmt.Fprintf(os.Stderr, "backend→client: %v\n", err)
 		}
+		_ = clientConn.Close()
+	}()
 
-		msgType == 'Q' {
-			queryText := string(payload[:])
-			queryText := string(payload[:len(payload)-1])
-							fmt.Printf("[QUERY LOGGED]: %s\n", queryText)
-						}
-
-						// Forward the whole package to the real Postgres backend
-						if _, err := backendConn.Write(headerBuf); err != nil {
-							return
-						}
-						if _, err := backendConn.Write(payload); err != nil {
-							return
-						}
-					}
-				}()
-
-				<-done
-}
+	go func() {
+		defer func() { done <- struct{}{} }()
+		if _, err := io.Copy(backendConn, clientConn); err != nil && err != io.EOF {
+			fmt.Fprintf(os.Stderr, "client→backend: %v\n", err)
 		}
-	}
+		_ = backendConn.Close()
+	}()
+
+	<-done
+	<-done
 }
