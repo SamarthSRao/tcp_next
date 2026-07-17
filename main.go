@@ -36,8 +36,17 @@ func main() {
 
 func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 	defer clientConn.Close()
-
-	// 1) Client startup phase (optional SSLRequest → 'N', then StartupMessage).
+	type txInfo struct {
+		inTx bool
+		txBackendConn *pool.PooledConn
+	}
+	scanner := bufio.NewScanner(clientConn)
+	scanner.Split(bufio.ScanBytes)
+	for scanner.Scan()
+	{
+		chunk:= scanner.Bytes()
+	}
+	
 	startup, err := pgwire.ReadStartupPhase(clientConn)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Startup phase failed: %v\n", err)
@@ -55,7 +64,7 @@ func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 	defer backendPool.Put(backendConn)
 
 	password := os.Getenv("PGPASSWORD")
-	hs, err := pgwire.CompleteBackendStartup(backendConn.netConn, startup.Raw, startup.User(), password)
+	hs, err := pgwire.CompleteBackendStartup(backendConn.NetConn, startup.Raw, startup.User(), password)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Backend handshake failed: %v\n", err)
 		return
@@ -74,18 +83,18 @@ func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 
 	go func() {
 		defer func() { done <- struct{}{} }()
-		if _, err := io.Copy(clientConn, backendConn.netConn); err != nil && err != io.EOF {
-		fmt.Fprintf(os.Stderr, "backend→client: %v\n", err)
+		if _, err := io.Copy(clientConn, backendConn.NetConn); err != nil && err != io.EOF {
+			fmt.Fprintf(os.Stderr, "backend→client: %v\n", err)
 		}
 		_ = clientConn.Close()
 	}()
 
 	go func() {
 		defer func() { done <- struct{}{} }()
-		if _, err := io.Copy(backendConn.netConn, clientConn); err != nil && err != io.EOF {
-		fmt.Fprintf(os.Stderr, "client→backend: %v\n", err)
+		if _, err := io.Copy(backendConn.NetConn, clientConn); err != nil && err != io.EOF {
+			fmt.Fprintf(os.Stderr, "client→backend: %v\n", err)
 		}
-		_ = backendConn.netConn.Close()
+		_ = backendConn.NetConn.Close()
 	}()
 
 	<-done

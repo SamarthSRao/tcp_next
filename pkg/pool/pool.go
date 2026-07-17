@@ -6,7 +6,7 @@ import (
 )
 
 type PooledConn struct {
-	netConn   net.Conn
+	NetConn   net.Conn
 	available bool
 }
 
@@ -45,7 +45,7 @@ func (p *Pool) dialNew()(*PooledConn, error) {
 	}
 
 	return &PooledConn{
-		netConn: netConn,
+		NetConn: netConn,
 	}, nil
 }
 func (p *Pool) Get()(*PooledConn, error) {
@@ -69,7 +69,7 @@ func (p *Pool) Put(conn *PooledConn) error {
 func (p *Pool) Close() error {
 	close(p.idle)
 	for conn := range p.idle {
-		conn.netConn.Close()
+		conn.NetConn.Close()
 	}
 	return nil
 }
