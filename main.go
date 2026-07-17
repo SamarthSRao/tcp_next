@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/samarthsrao/tcp-conn-pool/pkg/pgwire"
+	"github.com/samarthsrao/tcp-conn-pool/pkg/pool"
 )
 
 func main() {
@@ -19,17 +20,21 @@ func main() {
 
 	fmt.Println("Proxy listening on :5433 (TCP-202: startup handshake)...")
 
+	const poolSize = 10
+	backendPool := pool.NewPool(poolSize, "localhost:5432")
+	defer backendPool.Close()
+
 	for {
 		clientConn, err := listener.Accept()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to accept: %v\n", err)
 			continue
 		}
-		go handleConnection(clientConn)
+		go handleConnection(clientConn, backendPool)
 	}
 }
 
-func handleConnection(clientConn net.Conn) {
+func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 	defer clientConn.Close()
 
 	// 1) Client startup phase (optional SSLRequest → 'N', then StartupMessage).
@@ -42,16 +47,15 @@ func handleConnection(clientConn net.Conn) {
 		clientConn.RemoteAddr(), startup.User(), startup.Database(),
 		startup.ProtocolVersion, startup.Params)
 
-	// 2) Dial real Postgres and complete its handshake (proxy owns backend auth).
-	backendConn, err := net.Dial("tcp", "localhost:5432")
+	backendConn, err := backendPool.Get()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to dial backend: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to acquire backend: %v\n", err)
 		return
 	}
-	defer backendConn.Close()
+	defer backendPool.Put(backendConn)
 
 	password := os.Getenv("PGPASSWORD")
-	hs, err := pgwire.CompleteBackendStartup(backendConn, startup.Raw, startup.User(), password)
+	hs, err := pgwire.CompleteBackendStartup(backendConn.netConn, startup.Raw, startup.User(), password)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Backend handshake failed: %v\n", err)
 		return
@@ -70,18 +74,18 @@ func handleConnection(clientConn net.Conn) {
 
 	go func() {
 		defer func() { done <- struct{}{} }()
-		if _, err := io.Copy(clientConn, backendConn); err != nil && err != io.EOF {
-			fmt.Fprintf(os.Stderr, "backend→client: %v\n", err)
+		if _, err := io.Copy(clientConn, backendConn.netConn); err != nil && err != io.EOF {
+		fmt.Fprintf(os.Stderr, "backend→client: %v\n", err)
 		}
 		_ = clientConn.Close()
 	}()
 
 	go func() {
 		defer func() { done <- struct{}{} }()
-		if _, err := io.Copy(backendConn, clientConn); err != nil && err != io.EOF {
-			fmt.Fprintf(os.Stderr, "client→backend: %v\n", err)
+		if _, err := io.Copy(backendConn.netConn, clientConn); err != nil && err != io.EOF {
+		fmt.Fprintf(os.Stderr, "client→backend: %v\n", err)
 		}
-		_ = backendConn.Close()
+		_ = backendConn.netConn.Close()
 	}()
 
 	<-done

@@ -3,7 +3,6 @@ package pool
 import (
 	"fmt"
 	"net"
-	"sync"
 )
 
 type PooledConn struct {
@@ -26,6 +25,15 @@ func NewPool(maxSize int, addr string) *Pool {
 		addr:    addr,
 	}
 
+	// Pre‑populate the pool with maxSize connections.
+	for i := 0; i < maxSize; i++ {
+		if conn, err := poolInst.dialNew(); err == nil {
+			poolInst.idle <- conn
+		} else {
+			fmt.Println("Failed to pre‑dial connection:", err)
+		}
+	}
+
 	return poolInst
 }
 func (p *Pool) dialNew()(*PooledConn, error) {
@@ -36,42 +44,32 @@ func (p *Pool) dialNew()(*PooledConn, error) {
 		return nil,err
 	}
 
-	return &PooledConn {
-		netConn:netConn
-	},nil
+	return &PooledConn{
+		netConn: netConn,
+	}, nil
 }
 func (p *Pool) Get()(*PooledConn, error) {
-select {
-case conn := <-p.idle:
-	if conn.available{
-		conn.available=false
-		return conn,nil
-	}
-
-default:
-	
-	rawConn, err := net.Dial("tcp",p.addr)
-	if err!= nil {
-		fmt.Println(" Failed to connect to server", err)
-		return nil,err
-	}
-return &PooledConn{netConn: rawConn}, nil 
-}
+    // Block until a connection is available in the idle channel.
+    conn := <-p.idle
+    if conn == nil {
+        return nil, fmt.Errorf("pool closed")
+    }
+    // The connection is now in‑use.
+    conn.available = false
+    return conn, nil
 }
 
-func (p *Pool) Put()(conn *PooledConn)error {
-
-	conn.available = true	
-	select {
-		case p.idle <- conn:
-			return nil
-		default:
-			conn.netConn.Close()
-			return fmt.Errorf("pool is full")
-	}
-
+func (p *Pool) Put(conn *PooledConn) error {
+    // Mark as reusable and return to the idle channel.
+    conn.available = true
+    p.idle <- conn
+    return nil
 }
 
 func (p *Pool) Close() error {
-
+	close(p.idle)
+	for conn := range p.idle {
+		conn.netConn.Close()
+	}
+	return nil
 }
