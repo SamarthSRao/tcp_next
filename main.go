@@ -37,16 +37,10 @@ func main() {
 func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 	defer clientConn.Close()
 	type txInfo struct {
-		inTx bool
+		inTx          bool
 		txBackendConn *pool.PooledConn
 	}
-	scanner := bufio.NewScanner(clientConn)
-	scanner.Split(bufio.ScanBytes)
-	for scanner.Scan()
-	{
-		chunk:= scanner.Bytes()
-	}
-	
+
 	startup, err := pgwire.ReadStartupPhase(clientConn)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Startup phase failed: %v\n", err)
