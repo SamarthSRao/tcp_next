@@ -3,10 +3,12 @@ package proxy
 import (
 	"context"
 	"net"
+	"fmt"
 )
 
 type Proxy struct {
-	Addr string
+	Addr        string
+	BackendAddr string
 }
 
 func (p *Proxy) Start(ctx context.Context) error {
@@ -15,7 +17,16 @@ func (p *Proxy) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer Listener.Close()
+	for {
+		conn, err := Listener.Accept()
+		if err != nil {
+			return err
+		}
+		defer Listener.Close()
+		fmt.Printf(client net.Conn)
+		go p.handleConnection(client net.Conn)
+	}
+	
 
 	return nil
 }
