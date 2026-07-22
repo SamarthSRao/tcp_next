@@ -11,5 +11,11 @@ type Proxy struct {
 
 func (p *Proxy) Start(ctx context.Context) error {
 
-	Listener, err := net.Dial("tcp", p.add)
+	Listener, err := net.Listen("tcp", p.Addr)
+	if err != nil {
+		return err
+	}
+	defer Listener.Close()
+
+	return nil
 }
