@@ -77,20 +77,19 @@ func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 
 	go func() {
 		defer func() { done <- struct{}{} }()
-		if _, err := io.Copy(clientConn, backendConn.NetConn); err != nil && err != io.EOF {
-			fmt.Fprintf(os.Stderr, "backend→client: %v\n", err)
+		if _, err := io.Copy(backendConn.NetConn, clientConn); err != nil {
+			fmt.Fprintf(os.Stderr, "Error copying data from client to backend ")
 		}
-		_ = clientConn.Close()
 	}()
 
 	go func() {
 		defer func() { done <- struct{}{} }()
-		if _, err := io.Copy(backendConn.NetConn, clientConn); err != nil && err != io.EOF {
-			fmt.Fprintf(os.Stderr, "client→backend: %v\n", err)
+		if _, err := io.Copy(clientConn, backendConn.NetConn); err != nil {
+			fmt.Fprintf(os.Stderr, "Error copying data from backend to client: %v\n", err)
 		}
-		_ = backendConn.NetConn.Close()
-	}()
 
+	}()
 	<-done
 	<-done
+	fmt.Printf("Session for %s completed\n", clientConn.RemoteAddr())
 }

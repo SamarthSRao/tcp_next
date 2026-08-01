@@ -14,5 +14,17 @@ func ReadyForQueryStatus(Z byte) []byte {
 	if Z == FailedTransaction {
 		return []byte("failed_transaction")
 	}
-	return Z
+	return []byte{Z}
+}
+func HandleMessage(message string) string {
+	if message == "BEGIN" {
+		return "begin"
+	}
+	if message == "COMMIT" {
+		return "commit"
+	}
+	if message == "ROLLBACK" {
+		return "rollback"
+	}
+	return "unknown"
 }
