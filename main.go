@@ -38,9 +38,11 @@ func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 	defer clientConn.Close()
 
 	type txInfo struct {
-		inTx          bool
+		inTx bool
+
 		txBackendConn *pool.PooledConn
 	}
+	inTx := false
 
 	startup, err := pgwire.ReadStartupPhase(clientConn)
 	if err != nil {
@@ -79,7 +81,7 @@ func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 
 	for {
 
-		msgType, payload, err := pgwire.ReadMessage(clientConn)
+		msgType, payload, err := pgwire.ReadPayload(clientConn)
 		if err != nil {
 			fmt.Printf("Error reading message from client %v", clientConn)
 			return
@@ -101,7 +103,7 @@ func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 		backendConn.NetConn.Write(payload)
 
 		for {
-			msgType, respPayload, err := pgwire.ReadMessage(backendConn.NetConn)
+			msgType, respPayload, err := pgwire.ReadPayload(backendConn.NetConn)
 			if err != nil {
 				fmt.Printf("Error reading message from backend %v", backendConn)
 				return
@@ -114,12 +116,22 @@ func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 			clientConn.Write(respPayload)
 
 			if msgType == 'Z' {
-
+				if respPayload[0] == 'I' {
+					inTx = false
+				} else {
+					inTx = true
+				}
 				break
-
 			}
+
 		}
 
-	}
+		// ... end of the inner loop ...
+
+		if inTx == false {
+			backendPool.Put(backendConn)
+			backendConn = nil
+		}
+	} // <-- This is the end of the outer loop
 
 }

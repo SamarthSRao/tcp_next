@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-func ReadMessage(r io.Reader) (msgType byte, payload []byte, err error) {
+func ReadPayload(r io.Reader) (msgType byte, payload []byte, err error) {
 	header := make([]byte, 5)
 	_, err = io.ReadFull(r, header)
 	if err != nil {
