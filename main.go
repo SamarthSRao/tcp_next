@@ -1,8 +1,8 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
-	"io"
 	"net"
 	"os"
 
@@ -36,6 +36,7 @@ func main() {
 
 func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 	defer clientConn.Close()
+
 	type txInfo struct {
 		inTx          bool
 		txBackendConn *pool.PooledConn
@@ -49,13 +50,13 @@ func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 	fmt.Printf("Startup from %s: user=%q database=%q protocol=%d params=%v\n",
 		clientConn.RemoteAddr(), startup.User(), startup.Database(),
 		startup.ProtocolVersion, startup.Params)
+	//this is where I need to change the session
 
 	backendConn, err := backendPool.Get()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to acquire backend: %v\n", err)
 		return
 	}
-	defer backendPool.Put(backendConn)
 
 	password := os.Getenv("PGPASSWORD")
 	hs, err := pgwire.CompleteBackendStartup(backendConn.NetConn, startup.Raw, startup.User(), password)
@@ -70,35 +71,55 @@ func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 		fmt.Fprintf(os.Stderr, "Client handshake write failed: %v\n", err)
 		return
 	}
+	backendPool.Put(backendConn)
+	backendConn = nil
 	fmt.Printf("Client handshake complete; tunneling queries for %s\n", clientConn.RemoteAddr())
 
 	// 4) Transparent pipe for the rest of the session (queries/results).
-	done := make(chan struct{}, 2)
 
 	for {
-		msgType,frame,err := pgwire.ReadMessage(clientConn)
+
+		msgType, payload, err := pgwire.ReadMessage(clientConn)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading message from client: %v\n", err)
-			continue
+			fmt.Printf("Error reading message from client %v", clientConn)
+			return
 		}
-		if msgType == 'Q' {
-			query := string(frame [5:]\0)
-			queryType := pgwire.ClassifyQuery(query)
-			backendConn.NetConn.Write(frame)
-			<-done
-			<-done
-			pgwire.ClassifyQuery(query)
+		if backendConn == nil {
+
+			conn, borrowErr := backendPool.Get()
+			if borrowErr != nil {
+				fmt.Printf("Failed to borrow connection: %v\n", borrowErr)
+				return
+			}
+			backendConn = conn
 		}
+		backendConn.NetConn.Write([]byte{msgType})
+		lenBytes := make([]byte, 4)
+		binary.BigEndian.PutUint32(lenBytes, uint32(len(payload)+4))
+
+		backendConn.NetConn.Write(lenBytes)
+		backendConn.NetConn.Write(payload)
+
+		for {
+			msgType, respPayload, err := pgwire.ReadMessage(backendConn.NetConn)
+			if err != nil {
+				fmt.Printf("Error reading message from backend %v", backendConn)
+				return
+			}
+
+			clientConn.Write([]byte{msgType})
+			lenBytes := make([]byte, 4)
+			binary.BigEndian.PutUint32(lenBytes, uint32(len(respPayload)+4))
+			clientConn.Write(lenBytes)
+			clientConn.Write(respPayload)
+
+			if msgType == 'Z' {
+
+				break
+
+			}
+		}
+
 	}
 
-	go func() {
-		defer func() { done <- struct{}{} }()
-		if _, err := io.Copy(clientConn, backendConn.NetConn); err != nil {
-			fmt.Fprintf(os.Stderr, "Error copying data from backend to client: %v\n", err)
-		}
-
-	}()
-	<-done
-	<-done
-	fmt.Printf("Session for %s completed\n", clientConn.RemoteAddr())
 }
