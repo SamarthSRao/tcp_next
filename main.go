@@ -75,12 +75,21 @@ func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 	// 4) Transparent pipe for the rest of the session (queries/results).
 	done := make(chan struct{}, 2)
 
-	go func() {
-		defer func() { done <- struct{}{} }()
-		if _, err := io.Copy(backendConn.NetConn, clientConn); err != nil {
-			fmt.Fprintf(os.Stderr, "Error copying data from client to backend ")
+	for {
+		msgType,frame,err := pgwire.ReadMessage(clientConn)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading message from client: %v\n", err)
+			continue
 		}
-	}()
+		if msgType == 'Q' {
+			query := string(frame [5:]\0)
+			queryType := pgwire.ClassifyQuery(query)
+			backendConn.NetConn.Write(frame)
+			<-done
+			<-done
+			pgwire.ClassifyQuery(query)
+		}
+	}
 
 	go func() {
 		defer func() { done <- struct{}{} }()
