@@ -2,6 +2,7 @@ package pgwire
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 	"strings"
 )
@@ -15,10 +16,15 @@ func ReadPayload(r io.Reader) (msgType byte, payload []byte, err error) {
 
 	msgType = header[0]
 	length := binary.BigEndian.Uint32(header[1:])
+	if length < 4 {
+		return 0, nil, fmt.Errorf("invalid message length %d", length)
+	}
 	payload = make([]byte, length-4)
-	_, err = io.ReadFull(r, payload)
-	if err != nil {
-		return 0, nil, err
+	if len(payload) > 0 {
+		_, err = io.ReadFull(r, payload)
+		if err != nil {
+			return 0, nil, err
+		}
 	}
 	return msgType, payload, nil
 
@@ -26,9 +32,10 @@ func ReadPayload(r io.Reader) (msgType byte, payload []byte, err error) {
 
 func ReadyForQueryStatus(Z byte) []byte {
 
+	// PostgreSQL ReadyForQuery transaction-status bytes.
 	const Idle byte = 'I'
-	const InTransaction byte = 'B'
-	const FailedTransaction byte = 'D'
+	const InTransaction byte = 'T'
+	const FailedTransaction byte = 'E'
 	if Z == Idle {
 		return []byte("idle")
 	}
@@ -40,6 +47,7 @@ func ReadyForQueryStatus(Z byte) []byte {
 	}
 	return []byte{Z}
 }
+
 func ClassifyQuery(message string) string {
 	message = strings.TrimSpace(message)
 	message = strings.ToUpper(message)

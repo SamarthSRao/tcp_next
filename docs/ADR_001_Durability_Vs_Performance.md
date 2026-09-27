@@ -1,5 +1,7 @@
 # ADR 001: Durability vs. Performance in WAL-Kv
 
+> **Not about this repository.** This note describes a WAL-Kv sync-mode choice. The figures below were not measured on the TCP connection pool, and this proxy does not implement a write-ahead log. See the README for what the proxy actually does.
+
 ## Status
 Proposed/Accepted
 

@@ -37,13 +37,6 @@ func main() {
 func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 	defer clientConn.Close()
 
-	type txInfo struct {
-		inTx bool
-
-		txBackendConn *pool.PooledConn
-	}
-	inTx := false
-
 	startup, err := pgwire.ReadStartupPhase(clientConn)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Startup phase failed: %v\n", err)
@@ -52,7 +45,6 @@ func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 	fmt.Printf("Startup from %s: user=%q database=%q protocol=%d params=%v\n",
 		clientConn.RemoteAddr(), startup.User(), startup.Database(),
 		startup.ProtocolVersion, startup.Params)
-	//this is where I need to change the session
 
 	backendConn, err := backendPool.Get()
 	if err != nil {
@@ -60,37 +52,43 @@ func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 		return
 	}
 
-	password := os.Getenv("PGPASSWORD")
-	hs, err := pgwire.CompleteBackendStartup(backendConn.NetConn, startup.Raw, startup.User(), password)
+	hs, err := ensureBackendStartup(backendConn, startup)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Backend handshake failed: %v\n", err)
+		discardBackend(backendPool, backendConn)
 		return
 	}
 
-	// 3) Spoof successful auth toward the client (auth bypass for the app).
-	//    Replay ParameterStatus + BackendKeyData from the real backend.
+	// Spoof successful auth toward the client (auth bypass for the app).
+	// Replay ParameterStatus + BackendKeyData from the real backend.
 	if err := pgwire.WriteClientStartupOK(clientConn, hs); err != nil {
 		fmt.Fprintf(os.Stderr, "Client handshake write failed: %v\n", err)
+		backendPool.Put(backendConn)
 		return
 	}
 	backendPool.Put(backendConn)
 	backendConn = nil
 	fmt.Printf("Client handshake complete; tunneling queries for %s\n", clientConn.RemoteAddr())
 
-	// 4) Transparent pipe for the rest of the session (queries/results).
-
+	inTx := false
 	for {
-
 		msgType, payload, err := pgwire.ReadPayload(clientConn)
 		if err != nil {
 			fmt.Printf("Error reading message from client %v", clientConn)
+			if backendConn != nil {
+				discardBackend(backendPool, backendConn)
+			}
 			return
 		}
 		if backendConn == nil {
-
 			conn, borrowErr := backendPool.Get()
 			if borrowErr != nil {
 				fmt.Printf("Failed to borrow connection: %v\n", borrowErr)
+				return
+			}
+			if _, err := ensureBackendStartup(conn, startup); err != nil {
+				fmt.Fprintf(os.Stderr, "Backend handshake failed: %v\n", err)
+				discardBackend(backendPool, conn)
 				return
 			}
 			backendConn = conn
@@ -106,6 +104,7 @@ func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 			msgType, respPayload, err := pgwire.ReadPayload(backendConn.NetConn)
 			if err != nil {
 				fmt.Printf("Error reading message from backend %v", backendConn)
+				discardBackend(backendPool, backendConn)
 				return
 			}
 
@@ -116,6 +115,11 @@ func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 			clientConn.Write(respPayload)
 
 			if msgType == 'Z' {
+				if len(respPayload) == 0 {
+					fmt.Fprintf(os.Stderr, "ReadyForQuery missing status byte\n")
+					discardBackend(backendPool, backendConn)
+					return
+				}
 				if respPayload[0] == 'I' {
 					inTx = false
 				} else {
@@ -123,15 +127,38 @@ func handleConnection(clientConn net.Conn, backendPool *pool.Pool) {
 				}
 				break
 			}
-
 		}
-
-		// ... end of the inner loop ...
 
 		if inTx == false {
 			backendPool.Put(backendConn)
 			backendConn = nil
 		}
-	} // <-- This is the end of the outer loop
+	}
+}
 
+// ensureBackendStartup completes the backend handshake the first time a
+// pooled connection is used, and reuses that handshake afterward.
+// A PostgreSQL session accepts StartupMessage only once; sending it again
+// on an already-ready connection is a protocol error.
+func ensureBackendStartup(conn *pool.PooledConn, startup *pgwire.StartupMessage) (*pgwire.BackendHandshake, error) {
+	if conn.Startup != nil {
+		hs, ok := conn.Startup.(*pgwire.BackendHandshake)
+		if !ok || hs == nil {
+			return nil, fmt.Errorf("pooled connection has unexpected startup state")
+		}
+		return hs, nil
+	}
+	password := os.Getenv("PGPASSWORD")
+	hs, err := pgwire.CompleteBackendStartup(conn.NetConn, startup.Raw, startup.User(), password)
+	if err != nil {
+		return nil, err
+	}
+	conn.Startup = hs
+	return hs, nil
+}
+
+func discardBackend(backendPool *pool.Pool, conn *pool.PooledConn) {
+	if err := backendPool.Discard(conn); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to replace backend connection: %v\n", err)
+	}
 }
