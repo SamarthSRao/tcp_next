@@ -1,5 +1,7 @@
 # Data Flow — TCP Connection Pool Proxy
 
+> **Current behavior is the [README](../README.md).** The sections below were written when the proxy was a 1:1 byte tunnel: parse startup, then `io.Copy` for the rest of the session. `main.go` now keeps a fixed pool of backend sockets and returns a connection to the pool when `ReadyForQuery` reports idle (`I`).
+
 This document describes how data moves through the proxy **as implemented through TCP-202** (transparent tunnel + pgwire startup handshake).
 
 ---

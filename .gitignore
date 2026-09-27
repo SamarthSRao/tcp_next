@@ -1,0 +1,27 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# go build output (module directory name, or -o names used locally)
+/main
+/tcp-conn-pool
+/tcp-proxy
+/workspace
+
+# Test and profile output
+*.out
+coverage.txt
+*.prof
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Local env
+.env
+.env.*
